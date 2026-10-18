@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -27,12 +28,8 @@ import java.util.TreeSet
 import kotlin.math.abs
 
 /**
- * Watches Instagram Reels and YouTube Shorts.
- *
- * A "short" is counted when:
- *  - the player is opened (once per visit, with a 1.5 s grace period so flicker can't recount),
- *  - the user swipes to the next video and the swipe settles (0.8 s),
- *  - or, if the app never reports swipe events, the on-screen title/channel text of the video changes.
+ * Watches Instagram Reels and YouTube Shorts and powers every live feature:
+ * counting + time spent, the floating counter, limit nudges, friction mode, bedtime guard and intent check.
  */
 class CounterService : AccessibilityService() {
 
@@ -40,8 +37,7 @@ class CounterService : AccessibilityService() {
         const val IG_PKG = "com.instagram.android"
         const val YT_PKG = "com.google.android.youtube"
 
-        // View-ids of the Reels / Shorts player. They can change with app updates;
-        // add new ones here if counting stops (see Diagnostics in the app).
+        // View-ids of the Reels / Shorts player. They can change with app updates (see Diagnostics).
         private val IG_IDS = listOf("clips_viewer_view_pager", "clips_viewer_fragment_container", "clips_viewer_clips_tab")
         private val YT_IDS = listOf("reel_recycler", "reel_player_page_container", "reel_watch_fragment_root")
 
@@ -51,23 +47,31 @@ class CounterService : AccessibilityService() {
         private const val SETTLE_MS = 800L
         private const val MIN_GAP = 1200L
         private const val SUPPRESS_MS = 2500L
+        private const val FAST_MS = 3500L          // a video watched for less than this is a "quick flick"
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private val trackers = HashMap<String, Tracker>()
     private var receiverRegistered = false
+    private lateinit var overlays: Overlays
+
+    // intent check state
+    private var intentEndAt = 0L
+    private var intentCooldownUntil = 0L
 
     // ---------- lifecycle ----------
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        overlays = Overlays(this)
         trackers[IG_PKG] = Tracker(IG_PKG, Store.IG, "Reels", IG_IDS)
         trackers[YT_PKG] = Tracker(YT_PKG, Store.YT, "Shorts", YT_IDS)
         Store.prune(this)
         Store.prefs(this).registerOnSharedPreferenceChangeListener(prefListener)
         registerDateReceiver()
         scheduleMidnightRefresh()
+        Notifier.schedule(this)
         syncOverlay()
         DebugLog.add("Service connected")
     }
@@ -79,24 +83,124 @@ class CounterService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    override fun onUnbind(intent: Intent?): Boolean {
-        cleanup()
-        return super.onUnbind(intent)
-    }
-
-    override fun onDestroy() {
-        cleanup()
-        super.onDestroy()
-    }
+    override fun onUnbind(intent: Intent?): Boolean { cleanup(); return super.onUnbind(intent) }
+    override fun onDestroy() { cleanup(); super.onDestroy() }
 
     private fun cleanup() {
+        trackers.values.forEach { it.flushTime() }
         handler.removeCallbacksAndMessages(null)
         Store.prefs(this).unregisterOnSharedPreferenceChangeListener(prefListener)
         if (receiverRegistered) {
             try { unregisterReceiver(dateReceiver) } catch (_: Exception) {}
             receiverRegistered = false
         }
+        if (::overlays.isInitialized) overlays.clearAll()
         removePill()
+    }
+
+    // ---------- status (limit / bedtime) ----------
+
+    private class Status(val level: Int, val over: Int, val bed: Boolean)
+
+    /** level 0 = fine, 1 = near limit (amber), 2 = past limit (red). */
+    private fun status(): Status {
+        val d = Store.todayDay(this)
+        val limit = Store.limit(this)
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val bed = Store.inBedtime(this, hour)
+        val bl = Store.int(this, Store.KEY_BED_LIMIT, 5)
+        val overDay = d.total - limit
+        val overBed = if (bed) d.late - bl else 0
+        val level = when {
+            overDay > 0 || overBed > 0 -> 2
+            d.total * 5 >= limit * 4 || (bed && d.late > 0 && d.late >= maxOf(1, bl - 2)) -> 1
+            else -> 0
+        }
+        return Status(level, maxOf(0, overDay, overBed), bed)
+    }
+
+    // ---------- reactions to a counted video ----------
+
+    private fun onCounted() {
+        val d = Store.todayDay(this)
+        val limit = Store.limit(this)
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val bed = Store.inBedtime(this, hour)
+        val bl = Store.int(this, Store.KEY_BED_LIMIT, 5)
+
+        // daily limit nudges
+        val near = (limit * 4 + 4) / 5
+        val over = d.total - limit
+        if (d.total >= limit && !Store.flagToday(this, "n100")) {
+            Store.setFlagToday(this, "n100")
+            Store.setFlagToday(this, "n80")
+            overlays.banner("🛑", "You've reached your daily limit of $limit. Time for a break? 🌿", Pal.coral)
+        } else if (d.total >= near && d.total < limit && !Store.flagToday(this, "n80")) {
+            Store.setFlagToday(this, "n80")
+            overlays.banner("🟡", "Almost at your limit: ${d.total} of $limit videos.", Pal.amber)
+        } else if (over > 0 && over % 10 == 0) {
+            overlays.banner("🌿", "You're $over videos past your limit. Pause for a moment?", Pal.coral)
+        }
+
+        // bedtime guard
+        if (bed && d.late > 0) {
+            val after = hour < 5
+            if (d.late == 1) overlays.banner("🌙", "Still awake? Your bedtime limit is $bl videos tonight.", Pal.lav)
+            else if (d.late == bl) overlays.banner("😴", "That's your bedtime limit. Time to wind down.", Pal.lav)
+            else if (d.late > bl && (d.late - bl) % 3 == 0)
+                overlays.banner("🌙", if (after) "It's after midnight. Sleep helps more than one more video." else "Still scrolling? Rest is calling.", Pal.lav)
+        }
+        updatePill()
+        syncFriction()
+    }
+
+    private fun anyActive() = trackers.values.any { it.active }
+
+    /** Grey veil: only while inside Reels/Shorts, only when over the limit, and it deepens with every extra video. */
+    private fun syncFriction() {
+        if (!::overlays.isInitialized) return
+        val st = status()
+        val on = Store.bool(this, Store.KEY_FRICTION, true) && st.over > 0 && anyActive()
+        overlays.setFriction(if (on) minOf(0.6f, 0.10f + 0.025f * st.over) else 0f)
+    }
+
+    // ---------- intent check ----------
+
+    private fun onPlayerOpened() {
+        syncFriction()
+        if (!Store.bool(this, Store.KEY_INTENT, true)) return
+        val now = SystemClock.uptimeMillis()
+        if (intentEndAt > 0 || now < intentCooldownUntil || overlays.dialogShowing) return
+        intentCooldownUntil = now + 20_000L
+        overlays.intentDialog { minutes ->
+            if (minutes > 0) {
+                intentEndAt = SystemClock.uptimeMillis() + minutes * 60_000L
+                handler.removeCallbacks(intentRunnable)
+                handler.postDelayed(intentRunnable, 3000)
+                overlays.banner("⏱️", "Timer set for $minutes minutes. Enjoy mindfully!", Pal.primary)
+            }
+        }
+    }
+
+    private fun onPlayerClosed() {
+        if (anyActive()) return
+        intentEndAt = 0L
+        handler.removeCallbacks(intentRunnable)
+        overlays.closeDialog()
+        syncFriction()
+    }
+
+    private val intentRunnable = object : Runnable {
+        override fun run() {
+            if (intentEndAt <= 0L) return
+            if (anyActive() && SystemClock.uptimeMillis() >= intentEndAt && !overlays.dialogShowing) {
+                overlays.timeUpDialog(
+                    onMore = { intentEndAt = SystemClock.uptimeMillis() + 5 * 60_000L },
+                    onDone = { intentEndAt = 0L; performGlobalAction(GLOBAL_ACTION_HOME) }
+                )
+            }
+            handler.postDelayed(this, 3000)
+        }
     }
 
     // ---------- per-app tracker ----------
@@ -112,6 +216,8 @@ class CounterService : AccessibilityService() {
         var pagerSeen = false
         var scrollSeen = false
         var evalPosted = false
+        private var lastTick = 0L
+        private var pendingMs = 0L
         private val loggedIds = HashSet<String>()
 
         private val evalRunnable = Runnable { evalPosted = false; evaluate() }
@@ -164,10 +270,25 @@ class CounterService : AccessibilityService() {
             handler.postDelayed(timerRunnable, ms)
         }
 
+        // ----- time spent: add the gap between evaluations while the player is on screen -----
+        private fun tick(now: Long) {
+            if (lastTick > 0L) {
+                val dlt = now - lastTick
+                if (dlt in 1..4000) pendingMs += dlt
+            }
+            lastTick = now
+            if (pendingMs >= 5000L) flushTime()
+        }
+
+        fun flushTime() {
+            val s = (pendingMs / 1000L).toInt()
+            if (s > 0) { Store.addTime(this@CounterService, key, s); pendingMs -= s * 1000L }
+        }
+
         fun evaluate() {
             val now = SystemClock.uptimeMillis()
             val root = rootInActiveWindow
-            if (root == null) { if (active) startTimer(900); return }   // unknown: never flip state on a null tree
+            if (root == null) { if (active) startTimer(900); return }   // never flip state on a null tree
             if (root.packageName?.toString() != pkg) { markOff(now); return }
 
             var container: AccessibilityNodeInfo? = null
@@ -182,10 +303,13 @@ class CounterService : AccessibilityService() {
                 active = true
                 lastSig = ""
                 pendingSig = ""
+                lastTick = 0L
                 suppressUntil = now + SUPPRESS_MS
                 DebugLog.add("$label: player opened")
                 count("open")
+                onPlayerOpened()
             }
+            tick(now)
 
             var sig = signature(container)
             var viaRoot = false
@@ -202,7 +326,10 @@ class CounterService : AccessibilityService() {
                 offSince = 0L
                 lastSig = ""
                 pendingSig = ""
+                lastTick = 0L
+                flushTime()
                 DebugLog.add("$label: player closed")
+                onPlayerClosed()
             } else {
                 startTimer(LEAVE_MS)
             }
@@ -212,8 +339,8 @@ class CounterService : AccessibilityService() {
             if (sig.isEmpty()) return
             if (lastSig.isEmpty() || now < suppressUntil) { lastSig = sig; pendingSig = ""; return }
             if (sig == lastSig) { pendingSig = ""; return }
-            if (pagerSeen) { lastSig = sig; return }                       // swipe events are trusted instead
-            if (viaRoot && scrollSeen && now - lastScrollAt > 3000L) { lastSig = sig; return }  // e.g. comments opened
+            if (pagerSeen) { lastSig = sig; return }
+            if (viaRoot && scrollSeen && now - lastScrollAt > 3000L) { lastSig = sig; return }
             if (sig == pendingSig) {
                 lastSig = sig
                 pendingSig = ""
@@ -248,10 +375,13 @@ class CounterService : AccessibilityService() {
         }
 
         private fun count(reason: String) {
-            lastCountAt = SystemClock.uptimeMillis()
-            Store.increment(this@CounterService, key)
-            updatePill()
-            DebugLog.add("$label +1 ($reason)")
+            val now = SystemClock.uptimeMillis()
+            val fast = reason != "open" && lastCountAt > 0L && now - lastCountAt < FAST_MS
+            lastCountAt = now
+            val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+            Store.recordVideo(this@CounterService, key, hour, fast, Store.inBedtime(this@CounterService, hour))
+            DebugLog.add("$label +1 ($reason${if (fast) ", quick" else ""})")
+            onCounted()
         }
     }
 
@@ -261,6 +391,8 @@ class CounterService : AccessibilityService() {
         override fun onReceive(c: Context?, i: Intent?) {
             Store.prune(this@CounterService)
             updatePill()
+            syncFriction()
+            Notifier.schedule(this@CounterService)
             DebugLog.add("New day - counters reset")
         }
     }
@@ -296,6 +428,7 @@ class CounterService : AccessibilityService() {
 
     private var wm: WindowManager? = null
     private var pill: LinearLayout? = null
+    private var moodTv: TextView? = null
     private var igTv: TextView? = null
     private var ytTv: TextView? = null
     private var sumTv: TextView? = null
@@ -305,13 +438,17 @@ class CounterService : AccessibilityService() {
     private val params = WindowManager.LayoutParams(
         WindowManager.LayoutParams.WRAP_CONTENT,
         WindowManager.LayoutParams.WRAP_CONTENT,
-        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,   // no "draw over apps" permission needed
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
         PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key == Store.KEY_OVERLAY) syncOverlay()
+        when (key) {
+            Store.KEY_OVERLAY -> syncOverlay()
+            Store.KEY_LIMIT, Store.KEY_FRICTION, Store.KEY_BED_ON, Store.KEY_BED_LIMIT, Store.KEY_BED_START, Store.KEY_BED_END -> { updatePill(); syncFriction() }
+            Store.KEY_NOTIF, Store.KEY_SUMMARY_HOUR -> Notifier.schedule(this)
+        }
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -328,22 +465,14 @@ class CounterService : AccessibilityService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(8), dp(14), dp(8))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(24).toFloat()
-                setColor(Color.parseColor("#EB120D26"))
-                setStroke(dp(1), Color.parseColor("#887C4DFF"))
-            }
         }
-        fun lbl(color: String) = TextView(this).apply {
-            setTextColor(Color.parseColor(color))
-            textSize = 14f
+        fun lbl() = TextView(this).apply {
+            setTextColor(Color.WHITE)
             typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         }
-        val ig = lbl("#FF7AA8")
-        val yt = lbl("#B8A4FF")
-        val sum = lbl("#FFFFFF")
-        val div = View(this).apply { setBackgroundColor(Color.parseColor("#44FFFFFF")) }
+        val mood = lbl(); val ig = lbl(); val yt = lbl(); val sum = lbl()
+        val div = View(this).apply { setBackgroundColor(Color.parseColor("#66FFFFFF")) }
+        root.addView(mood)
         root.addView(ig)
         root.addView(div, LinearLayout.LayoutParams(dp(1), dp(14)).apply { setMargins(dp(10), 0, dp(10), 0) })
         root.addView(yt)
@@ -367,7 +496,7 @@ class CounterService : AccessibilityService() {
                     if (moved) {
                         Store.prefs(this).edit().putInt(Store.KEY_X, params.x).putInt(Store.KEY_Y, params.y).apply()
                     } else {
-                        compact = !compact                       // tap = collapse / expand
+                        compact = !compact
                         Store.prefs(this).edit().putBoolean(Store.KEY_COMPACT, compact).apply()
                         applyCompact()
                     }
@@ -376,7 +505,7 @@ class CounterService : AccessibilityService() {
             true
         }
 
-        igTv = ig; ytTv = yt; sumTv = sum; divider = div
+        moodTv = mood; igTv = ig; ytTv = yt; sumTv = sum; divider = div
         try {
             wm?.addView(root, params)
             pill = root
@@ -395,11 +524,27 @@ class CounterService : AccessibilityService() {
         sumTv?.visibility = if (compact) View.VISIBLE else View.GONE
     }
 
+    /** Colour = state (blue ok, amber near limit, red over). With friction mode on, the pill grows as you go over. */
     private fun updatePill() {
-        val (ig, yt) = Store.todayCounts(this)
-        igTv?.text = "📸 $ig"
-        ytTv?.text = "▶ $yt"
-        sumTv?.text = "Σ ${ig + yt}"
+        val root = pill ?: return
+        val d = Store.todayDay(this)
+        val st = status()
+        val limit = Store.limit(this)
+        val grow = if (Store.bool(this, Store.KEY_FRICTION, true) && st.over > 0) 1f + minOf(0.8f, 0.05f * st.over) else 1f
+        val fill = when (st.level) { 2 -> "#F4617F"; 1 -> "#F5A524"; else -> "#3F6BE8" }
+
+        root.setPadding(dp((14 * grow).toInt()), dp((8 * grow).toInt()), dp((14 * grow).toInt()), dp((8 * grow).toInt()))
+        root.background = GradientDrawable().apply {
+            cornerRadius = dp(26).toFloat() * grow
+            setColor(Color.parseColor(fill))
+            setStroke(dp(2), Color.WHITE)
+        }
+        for (tv in listOf(moodTv, igTv, ytTv, sumTv)) tv?.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f * grow)
+        moodTv?.text = Stats.moodEmoji(Stats.mood(d, limit)) + "  "
+        igTv?.text = "📸 ${d.ig}"
+        ytTv?.text = "▶ ${d.yt}"
+        sumTv?.text = "Σ ${d.total}"
+        try { wm?.updateViewLayout(root, params) } catch (_: Exception) {}
     }
 
     private fun removePill() {
