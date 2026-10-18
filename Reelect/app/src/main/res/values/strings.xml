@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Reelect</string>
+    <string name="service_desc">Counts how many Instagram Reels and YouTube Shorts you scroll through. Nothing leaves your phone.</string>
+</resources>
