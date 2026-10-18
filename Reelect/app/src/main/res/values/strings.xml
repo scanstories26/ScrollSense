@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Reelect</string>
-    <string name="service_desc">Counts how many Instagram Reels and YouTube Shorts you scroll through. Nothing leaves your phone.</string>
+    <string name="app_name">ScrollSense</string>
+    <string name="service_desc">ScrollSense counts how many Instagram Reels and YouTube Shorts you scroll through. It only reads on-screen structure in those two apps and never leaves your phone.</string>
 </resources>

@@ -1,28 +1,19 @@
-# Reelect — know how much you scroll
+# ScrollSense — know every scroll
 
 Counts Instagram Reels and YouTube Shorts and shows a draggable floating counter over any app.
 
-## Build the APK
-1. Install Android Studio (Koala or newer) and open this folder.
-2. Let Gradle sync, then Build > Build Bundle(s)/APK(s) > Build APK(s).
-3. APK: app/build/outputs/apk/debug/app-debug.apk  — install on your phone.
+## Features
+- Floating counter (drag to move, tap to collapse) + on/off switch in the app
+- Counts reset to 0 at midnight; last 15 days kept (chart in the app), older data auto-deleted
+- Setup screen with status for Accessibility, Battery and Restricted-settings
+- Fixed signing key (app/scrollsense-debug.keystore) so every new build installs over the old one
+- Diagnostics panel in the app for troubleshooting detection
 
-## First run
-1. Open Reelect > "Open Accessibility Settings" > Reelect > turn ON.
-   (Android 13+: if greyed out, App info > ⋮ > "Allow restricted settings" first.)
-2. Use the "Show floating counter" switch to hide / unhide the pill. Drag the pill anywhere.
+## Build online
+Push to GitHub; the workflow builds the APK. Actions > latest run > Artifacts > Reelect-APK.
+(Workflow file lives at .github/workflows/build.yml in the repo root, project folder = Reelect.)
 
-## How it works
-- AccessibilityService limited to com.instagram.android and com.google.android.youtube.
-- Counts +1 when you enter the Reels/Shorts player and +1 each time a swipe settles for 0.8 s.
-- Overlay uses TYPE_ACCESSIBILITY_OVERLAY, so no "draw over other apps" permission is needed.
-- Daily counts are saved locally; anything older than 15 days is auto-deleted.
-- No internet permission, nothing leaves the device.
-
-## If counting stops after an app update
-Instagram/YouTube may rename internal view ids. Use Android Studio > Layout Inspector (or uiautomatorviewer)
-on the Reels/Shorts screen and update IG_IDS / YT_IDS in CounterService.kt.
-
-## Build online (no install)
-Push this folder to a GitHub repo. The workflow in .github/workflows/build.yml builds the APK automatically.
-Open the repo > Actions tab > latest run > download the "Reelect-APK" artifact.
+## First run on phone
+1. Open ScrollSense > "Enable tracking" > Installed apps > ScrollSense > ON.
+   Android 13+: if greyed out, App info > ⋮ > Allow restricted settings.
+2. Tap "Allow unrestricted battery".

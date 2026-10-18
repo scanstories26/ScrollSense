@@ -4,6 +4,7 @@
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagReportViewIds|flagIncludeNotImportantViews"
     android:canRetrieveWindowContent="true"
-    android:notificationTimeout="150"
+    android:notificationTimeout="100"
     android:packageNames="com.instagram.android,com.google.android.youtube"
+    android:settingsActivity="com.reelect.app.MainActivity"
     android:description="@string/service_desc" />
