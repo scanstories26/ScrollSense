@@ -122,7 +122,7 @@ class HomePage(a: MainActivity) : Page(a) {
         hc.addView(ui.text("SCROLL SCORE", 11.5f, Pal.muted, true).apply { letterSpacing = 0.12f })
         val big = ui.hbox()
         big.addView(ui.text(sc.value.toString(), 42f, Pal.ink, true))
-        big.addView(ui.text(" /100", 14f, Pal.muted), ui.lp(left = 2))
+        big.addView(ui.text(" /100", 14f, Pal.muted), ui.lp(w = ui.WRAP, left = 2))
         hc.addView(big)
         val lab = if (sc.value >= 70) ui.chip(sc.label, Pal.mint, Color.WHITE) else if (sc.value >= 50) ui.chip(sc.label, Pal.amber, Color.WHITE) else ui.chip(sc.label, Pal.coral, Color.WHITE)
         hc.addView(lab)
@@ -528,19 +528,20 @@ class ImpactPage(a: MainActivity) : Page(a) {
 
 // ======================================================================= SCORE
 
-class ScorePage(a: MainActivity) : Page(a) {
-    override val title = "Scroll score"
-    override fun sig(): String { val d = Store.todayDay(a); return "${d.total}|${d.fast}|${d.late}|${Store.limit(a)}|${Store.today()}" }
+class ScorePage(a: MainActivity, private val date: String? = null) : Page(a) {
+    override val title: String = if (date == null || date == Store.today()) "Scroll score" else "Score · ${date.substring(5)}"
+    private fun day(): Store.Day = (if (date == null) null else Store.last15(a).firstOrNull { it.date == date }) ?: Store.todayDay(a)
+    override fun sig(): String { val d = day(); return "${d.total}|${d.fast}|${d.late}|${Store.limit(a)}|${Store.today()}" }
 
     override fun build() {
-        val d = Store.todayDay(a)
+        val d = day()
         val limit = Store.limit(a)
         val sc = Stats.score(d, limit)
         val mood = Stats.mood(d, limit)
 
         val hero = ui.vbox().apply { gravity = Gravity.CENTER_HORIZONTAL; setPadding(ui.dp(16), ui.dp(16), ui.dp(16), ui.dp(18)); background = ui.rounded(Pal.card, 24, Pal.line) }
         hero.addView(RingView(a).apply { score = sc.value }, LinearLayout.LayoutParams(ui.dp(170), ui.dp(170)))
-        hero.addView(ui.text(sc.label, 20f, Pal.ink, true), ui.lp(w = ui.WRAP, top = 4))
+        hero.addView(ui.text(if (d.total == 0) "Fresh start" else sc.label, 20f, Pal.ink, true), ui.lp(w = ui.WRAP, top = 4))
         hero.addView(ui.text(Stats.moodMessage(mood, d.total), 13f, Pal.muted).apply { gravity = Gravity.CENTER }, ui.lp(top = 4))
         add(hero, 8)
 
@@ -549,7 +550,7 @@ class ScorePage(a: MainActivity) : Page(a) {
         fun line(label: String, sub: String, pen: Int, max: Int, color: Int) {
             val h = ui.hbox()
             h.addView(ui.text(label, 14f, Pal.ink, true), ui.lp(w = 0, weight = 1f))
-            h.addView(ui.text(if (pen == 0) "no penalty" else "−$pen", 13.5f, if (pen == 0) Pal.mint else color, true))
+            h.addView(ui.text(if (pen == 0) (if (d.total == 0) "no videos yet" else "no penalty") else "−$pen", 13.5f, if (pen == 0) Pal.mint else color, true))
             b.addView(h, ui.lp(top = 16))
             b.addView(ProgressBarView(a).apply { progress = pen / max.toFloat(); this.color = color }, ui.lp(top = 6))
             b.addView(ui.text(sub, 12f, Pal.muted), ui.lp(top = 4))
@@ -562,6 +563,7 @@ class ScorePage(a: MainActivity) : Page(a) {
         val last7 = Store.last15(a).takeLast(7)
         val w = ui.card()
         w.addView(ui.text("Last 7 days", 16f, Pal.ink, true))
+        w.addView(ui.text("Tap a day to see why it scored that way.", 12f, Pal.muted), ui.lp(top = 2))
         val r = LinearLayout(a).apply { orientation = LinearLayout.HORIZONTAL }
         last7.forEach { day ->
             val s = Stats.score(day, limit).value
@@ -569,6 +571,7 @@ class ScorePage(a: MainActivity) : Page(a) {
             val cell = ui.vbox().apply { gravity = Gravity.CENTER_HORIZONTAL }
             cell.addView(ui.text(if (day.total == 0) "–" else s.toString(), 15f, color, true).apply { gravity = Gravity.CENTER })
             cell.addView(ui.text(SimpleDateFormat("EEE", Locale.getDefault()).format(SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(day.date)!!).take(2), 11f, Pal.muted).apply { gravity = Gravity.CENTER }, ui.lp(top = 2))
+            ui.tappable(cell) { a.push(ScorePage(a, day.date)) }
             r.addView(cell, ui.lp(w = 0, weight = 1f))
         }
         w.addView(r, ui.lp(top = 12))
@@ -600,7 +603,7 @@ class SetupPage(a: MainActivity) : Page(a) {
     override fun build() {
         val acc = a.serviceEnabled(); val bat = a.batteryOk()
         val c = ui.card()
-        c.addView(ui.text("Get ScrollSense ready", 17f, Pal.ink, true))
+        c.addView(ui.text("Get ScrollSense ready", 17f, Pal.ink, true).apply { setOnLongClickListener { a.push(DiagnosticsPage(a)); true } })
         c.addView(ui.text("Three quick steps so counting keeps working in the background.", 12.5f, Pal.muted), ui.lp(top = 2, h = ui.WRAP))
         val inner = ui.vbox()
         step(inner, "1", "Accessibility service", "Lets ScrollSense notice swipes in Instagram and YouTube. Open Installed apps, tap ScrollSense, and turn it on.",
@@ -635,8 +638,10 @@ class SetupPage(a: MainActivity) : Page(a) {
             AlertDialog.Builder(a).setTitle("Delete all data?").setMessage("This removes your saved counts and history. It can't be undone.")
                 .setPositiveButton("Delete") { _, _ -> Store.clearAll(a); rebuild() }.setNegativeButton("Cancel", null).show()
         }, ui.lp(top = 8))
-        d.addView(ui.softBtn("Diagnostics (for troubleshooting)") { a.push(DiagnosticsPage(a)) }, ui.lp(top = 8))
         add(d)
+
+        val ver = try { a.packageManager.getPackageInfo(a.packageName, 0).versionName } catch (e: Exception) { "?" }
+        add(ui.text("ScrollSense version $ver", 12f, Pal.muted).apply { gravity = Gravity.CENTER }, 18)
     }
 
     private fun openInfo() {

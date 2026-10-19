@@ -117,7 +117,7 @@ class Ui(val ctx: Context) {
             trackTintList = ColorStateList(st, intArrayOf(Color.parseColor("#B9CBFF"), Color.parseColor("#DDE3F0")))
             setOnCheckedChangeListener { _, on -> onChange(on) }
         }
-        row.addView(sw, lp(left = 10))
+        row.addView(sw, lp(w = WRAP, left = 10))
         return row
     }
 
