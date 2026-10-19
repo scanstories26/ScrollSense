@@ -405,9 +405,6 @@ class FocusPage(a: MainActivity) : Page(a) {
         c1.addView(ui.divider(), ui.lp(h = 1, top = 14))
         c1.addView(ui.switchRow("Friction mode", "Past your limit, the counter grows and the screen slowly fades to grey. Scrolling gets less rewarding, never blocked.",
             Store.bool(a, Store.KEY_FRICTION, true)) { Store.setBool(a, Store.KEY_FRICTION, it) }, ui.lp(top = 14))
-        c1.addView(ui.divider(), ui.lp(h = 1, top = 14))
-        c1.addView(ui.switchRow("Intent check", "When you open Reels or Shorts, choose 5, 10 or 20 minutes and get a reminder when time is up.",
-            Store.bool(a, Store.KEY_INTENT, true)) { Store.setBool(a, Store.KEY_INTENT, it) }, ui.lp(top = 14))
         add(c1)
 
         add(ui.sectionTitle("REMINDERS"), 18)

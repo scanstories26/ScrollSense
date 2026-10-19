@@ -45,8 +45,9 @@ class CounterService : AccessibilityService() {
         private const val EVAL_GAP_IDLE = 1000L
         private const val LEAVE_MS = 1500L
         private const val SETTLE_MS = 800L
-        private const val MIN_GAP = 1200L
-        private const val SUPPRESS_MS = 2500L
+        private const val MIN_GAP = 1500L
+        private const val OPEN_DWELL_MS = 1500L
+        private const val SUPPRESS_MS = 4000L
         private const val FAST_MS = 3500L          // a video watched for less than this is a "quick flick"
     }
 
@@ -54,10 +55,6 @@ class CounterService : AccessibilityService() {
     private val trackers = HashMap<String, Tracker>()
     private var receiverRegistered = false
     private lateinit var overlays: Overlays
-
-    // intent check state
-    private var intentEndAt = 0L
-    private var intentCooldownUntil = 0L
 
     // ---------- lifecycle ----------
 
@@ -164,43 +161,11 @@ class CounterService : AccessibilityService() {
         overlays.setFriction(if (on) minOf(0.6f, 0.10f + 0.025f * st.over) else 0f)
     }
 
-    // ---------- intent check ----------
-
-    private fun onPlayerOpened() {
-        syncFriction()
-        if (!Store.bool(this, Store.KEY_INTENT, true)) return
-        val now = SystemClock.uptimeMillis()
-        if (intentEndAt > 0 || now < intentCooldownUntil || overlays.dialogShowing) return
-        intentCooldownUntil = now + 20_000L
-        overlays.intentDialog { minutes ->
-            if (minutes > 0) {
-                intentEndAt = SystemClock.uptimeMillis() + minutes * 60_000L
-                handler.removeCallbacks(intentRunnable)
-                handler.postDelayed(intentRunnable, 3000)
-                overlays.banner("⏱️", "Timer set for $minutes minutes. Enjoy mindfully!", Pal.primary)
-            }
-        }
-    }
+    private fun onPlayerOpened() { syncFriction() }
 
     private fun onPlayerClosed() {
         if (anyActive()) return
-        intentEndAt = 0L
-        handler.removeCallbacks(intentRunnable)
-        overlays.closeDialog()
         syncFriction()
-    }
-
-    private val intentRunnable = object : Runnable {
-        override fun run() {
-            if (intentEndAt <= 0L) return
-            if (anyActive() && SystemClock.uptimeMillis() >= intentEndAt && !overlays.dialogShowing) {
-                overlays.timeUpDialog(
-                    onMore = { intentEndAt = SystemClock.uptimeMillis() + 5 * 60_000L },
-                    onDone = { intentEndAt = 0L; performGlobalAction(GLOBAL_ACTION_HOME) }
-                )
-            }
-            handler.postDelayed(this, 3000)
-        }
     }
 
     // ---------- per-app tracker ----------
@@ -223,6 +188,8 @@ class CounterService : AccessibilityService() {
         private val evalRunnable = Runnable { evalPosted = false; evaluate() }
         private val timerRunnable = Runnable { evaluate() }
         private val settleRunnable = Runnable { onSettled() }
+        private var openAt = 0L
+        private val openRunnable = Runnable { if (active && lastCountAt < openAt) count("open") }
 
         fun onEvent(e: AccessibilityEvent) {
             val now = SystemClock.uptimeMillis()
@@ -308,7 +275,9 @@ class CounterService : AccessibilityService() {
                 lastTick = 0L
                 suppressUntil = now + SUPPRESS_MS
                 DebugLog.add("$label: player opened")
-                count("open")
+                openAt = now
+                handler.removeCallbacks(openRunnable)
+                handler.postDelayed(openRunnable, OPEN_DWELL_MS)
                 onPlayerOpened()
             }
             tick(now)
@@ -330,6 +299,7 @@ class CounterService : AccessibilityService() {
                 pendingSig = ""
                 lastTick = 0L
                 flushTime()
+                handler.removeCallbacks(openRunnable)
                 DebugLog.add("$label: player closed")
                 onPlayerClosed()
             } else {
