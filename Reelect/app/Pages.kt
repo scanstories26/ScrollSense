@@ -639,6 +639,9 @@ class SetupPage(a: MainActivity) : Page(a) {
                 .setPositiveButton("Delete") { _, _ -> Store.clearAll(a); rebuild() }.setNegativeButton("Cancel", null).show()
         }, ui.lp(top = 8))
         add(d)
+
+        val ver = try { a.packageManager.getPackageInfo(a.packageName, 0).versionName } catch (e: Exception) { "?" }
+        add(ui.text("ScrollSense version $ver", 12f, Pal.muted).apply { gravity = Gravity.CENTER }, 18)
     }
 
     private fun openInfo() {
