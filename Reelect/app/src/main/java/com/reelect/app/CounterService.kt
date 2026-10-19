@@ -280,6 +280,8 @@ class CounterService : AccessibilityService() {
             if (pendingMs >= 5000L) flushTime()
         }
 
+        fun discardPending() { pendingMs = 0L }
+
         fun flushTime() {
             val s = (pendingMs / 1000L).toInt()
             if (s > 0) { Store.addTime(this@CounterService, key, s); pendingMs -= s * 1000L }
@@ -448,6 +450,7 @@ class CounterService : AccessibilityService() {
             Store.KEY_OVERLAY -> syncOverlay()
             Store.KEY_LIMIT, Store.KEY_FRICTION, Store.KEY_BED_ON, Store.KEY_BED_LIMIT, Store.KEY_BED_START, Store.KEY_BED_END -> { updatePill(); syncFriction() }
             Store.KEY_NOTIF, Store.KEY_SUMMARY_HOUR -> Notifier.schedule(this)
+            Store.KEY_RESET -> { trackers.values.forEach { it.discardPending() }; updatePill(); syncFriction() }
         }
     }
 

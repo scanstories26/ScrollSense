@@ -33,6 +33,7 @@ object Store {
     const val KEY_BED_START = "bed_start"
     const val KEY_BED_END = "bed_end"
     const val KEY_BED_LIMIT = "bed_limit"
+    const val KEY_RESET = "reset_tick"     // changes whenever all data is deleted, so the live counter refreshes
 
     private const val PREFS = "scrollsense"
     private const val KEY_DATA = "data"
@@ -100,7 +101,14 @@ object Store {
     }
 
     @Synchronized fun prune(c: Context) { ensureFirstDay(c); save(c, load(c)) }
-    @Synchronized fun clearAll(c: Context) { prefs(c).edit().remove(KEY_DATA).apply() }
+    @Synchronized fun clearAll(c: Context) {
+        prefs(c).edit()
+            .remove(KEY_DATA)
+            .remove("flag_n80").remove("flag_n100")
+            .putString(KEY_FIRST, today())
+            .putLong(KEY_RESET, System.currentTimeMillis())
+            .apply()
+    }
 
     private fun todayObj(all: JSONObject): JSONObject = all.optJSONObject(today()) ?: JSONObject()
 
